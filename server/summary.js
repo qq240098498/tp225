@@ -15,6 +15,16 @@ function overview(data) {
   const publishCountByEvent = {};
   for (const p of data.publishes) publishCountByEvent[p.eventId] = (publishCountByEvent[p.eventId] || 0) + 1;
 
+  // 更正：批次数（登记动作次数）、条目数（受影响事件次数）、被更正过的事件数
+  let correctionEntryCount = 0;
+  const correctedEventSet = {};
+  for (const batch of data.corrections) {
+    for (const item of batch.items || []) {
+      correctionEntryCount += 1;
+      correctedEventSet[item.eventId] = true;
+    }
+  }
+
   return {
     today: store.todayIso(),
     stationCount: data.stations.length,
@@ -24,6 +34,9 @@ function overview(data) {
     arrivalCount: data.arrivals.length,
     reviewCount: data.reviews.length,
     publishCount: data.publishes.length,
+    correctionBatchCount: data.corrections.length,
+    correctionEntryCount,
+    correctedEventCount: Object.keys(correctedEventSet).length,
     repeatedPublishEvents: Object.keys(publishCountByEvent).filter((k) => publishCountByEvent[k] > 1).length,
     overToleranceReviews: data.reviews.filter((r) => r.overTolerance).length,
     maxMagnitude: magnitudes.length ? store.round(Math.max.apply(null, magnitudes), 2) : 0,

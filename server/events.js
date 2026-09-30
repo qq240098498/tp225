@@ -1,6 +1,7 @@
 const { AppError } = require('./errors');
 const store = require('./store');
 const quakelib = require('./quakelib');
+const corrections = require('./corrections');
 
 const STATUS_LIST = ['待复核', '已复核', '已发布', '已删除'];
 const BURIED = 2000;
@@ -13,15 +14,20 @@ function latestReviewOf(data, eventId) {
 }
 
 function decorate(data, event) {
-  const magnitude = quakelib.eventMagnitude(data, event.id);
+  const computed = quakelib.eventMagnitude(data, event.id);
   const rms = quakelib.eventRms(data, event.id);
   const arrivals = data.arrivals.filter((a) => a.eventId === event.id);
   const publishes = data.publishes.filter((p) => p.eventId === event.id);
   const latest = latestReviewOf(data, event.id);
+  // 当前对外震级：更正过就用最近一次更正值，没更正过用台站中位震级
+  const magnitude = corrections.currentMagnitude(data, event);
+  const correctionCount = corrections.countOfEvent(data, event.id);
   return Object.assign({}, event, {
-    magnitude: magnitude.magnitude,
+    magnitude,
+    autoMagnitude: computed.magnitude,
+    correctedMagnitude: event.correctedMagnitude !== undefined ? Number(event.correctedMagnitude) : null,
     magnitudeType: event.magnitudeType || 'ML',
-    stationCount: magnitude.stationCount,
+    stationCount: computed.stationCount,
     stationCodes: quakelib.stationsOfEvent(data, event.id),
     arrivalCount: arrivals.length,
     rms,
@@ -32,6 +38,10 @@ function decorate(data, event) {
     reviewCount: data.reviews.filter((r) => r.eventId === event.id).length,
     publishCount: publishes.length,
     lastPublishAt: publishes.length ? publishes[publishes.length - 1].at : '',
+    correctionCount,
+    correctedFields: corrections.correctedFieldsOfEvent(data, event.id),
+    lastCorrectionAt: event.lastCorrectionAt || '',
+    lastCorrector: event.lastCorrector || '',
   });
 }
 
@@ -39,13 +49,14 @@ function list(data, query) {
   const q = query || {};
   let rows = data.events.slice();
   if (q.status) rows = rows.filter((e) => e.status === q.status);
-  if (q.minMagnitude) rows = rows.filter((e) => Number(e.magnitude) >= Number(q.minMagnitude));
   if (q.regionName) rows = rows.filter((e) => String(e.regionName || '').includes(q.regionName));
   if (q.from) rows = rows.filter((e) => e.originTime >= q.from);
   if (q.to) rows = rows.filter((e) => e.originTime <= q.to);
   const decorated = rows.map((e) => decorate(data, e));
-  // 按震级从大到小（震级相同时按发震时刻）
-  return decorated.sort((a, b) => (a.originTime < b.originTime ? 1 : -1));
+  // 震级筛选要放在 decorate 之后：震级是算出来的，更正过的事件取当前口径震级
+  const filtered = q.minMagnitude ? decorated.filter((e) => Number(e.magnitude) >= Number(q.minMagnitude)) : decorated;
+  // 按发震时刻从近到远
+  return filtered.sort((a, b) => (a.originTime < b.originTime ? 1 : -1));
 }
 
 function find(data, id) {
@@ -70,7 +81,51 @@ function detail(data, id) {
     arrivals: enriched,
     reviews: data.reviews.filter((r) => r.eventId === id).slice().sort((a, b) => (a.at < b.at ? -1 : 1)),
     publishes: data.publishes.filter((p) => p.eventId === id).slice().sort((a, b) => (a.at < b.at ? -1 : 1)),
+    corrections: corrections.listEntries(data, { eventId: id }),
+    timeline: timeline(data, id),
   });
+}
+
+// 对外口径时间线：发布与更正按时刻排在一起，每一步都能看到当时对外值
+// 发布记录与更正条目都不删不改，所以这里能完整还原「第一次发多少、第几次改成多少」
+function timeline(data, eventId) {
+  const steps = [];
+  for (const p of data.publishes.filter((x) => x.eventId === eventId)) {
+    steps.push({
+      kind: 'publish',
+      at: p.at,
+      seq: data.publishes.filter((x) => x.eventId === eventId && x.at <= p.at).length,
+      operator: p.operator,
+      type: p.type,
+      channel: p.channel,
+      values: {
+        magnitude: p.magnitude,
+        lat: p.lat,
+        lon: p.lon,
+        depth: p.depth,
+        originTime: p.originTime,
+        regionName: p.regionName,
+        magnitudeType: p.magnitudeType,
+      },
+      remark: p.remark || '',
+    });
+  }
+  for (const entry of corrections.listEntries(data, { eventId })) {
+    const values = Object.assign({}, entry.before);
+    for (const change of entry.fields) values[change.field] = change.after;
+    steps.push({
+      kind: 'correction',
+      id: entry.batchId,
+      at: entry.at,
+      seq: entry.seq,
+      corrector: entry.corrector,
+      reason: entry.reason,
+      changes: entry.fields,
+      values,
+      remark: entry.remark || '',
+    });
+  }
+  return steps.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.kind === 'publish' ? -1 : 1));
 }
 
 function validate(data, payload, current) {
@@ -113,6 +168,14 @@ function create(data, payload) {
 function update(data, id, payload) {
   const event = find(data, id);
   validate(data, payload, event);
+  // 已发布之后，口径字段只能走「更正」登记，不能在这直接抹掉
+  if (event.status === '已发布') {
+    const protectedFields = ['lat', 'lon', 'depth', 'originTime', 'regionName', 'magnitudeType', 'code'];
+    const touched = protectedFields.filter((key) => payload[key] !== undefined && String(payload[key]) !== String(event[key]));
+    if (touched.length) {
+      throw new AppError(409, 'EVENT_PUBLISHED_LOCKED', '事件已经发布，' + touched.join('、') + ' 不能直接改，要走更正登记并留痕', { fields: touched });
+    }
+  }
   const merged = Object.assign({}, event, payload);
   Object.assign(event, {
     code: String(merged.code).trim(),
@@ -141,6 +204,10 @@ function addReview(data, id, payload) {
   }
   if (payload.action && !['通过', '退回', '改震级', '改位置'].includes(payload.action)) {
     throw new AppError(400, 'VALIDATION_FAILED', '复核动作只能是：通过、退回、改震级、改位置', { action: '动作不对' });
+  }
+  // 已发布之后改震级/深度必须走更正登记，不能借复核把对外口径抹掉
+  if (event.status === '已发布' && (Number(afterMagnitude) !== Number(beforeMagnitude) || Number(afterDepth) !== Number(beforeDepth))) {
+    throw new AppError(409, 'EVENT_PUBLISHED_LOCKED', '事件已经发布，震级/深度的改动要走「更正登记」，会留下改前改后和依据', {});
   }
   const tolerance = quakelib.reviewOverTolerance(beforeMagnitude, afterMagnitude, data.settings);
   const review = {
@@ -182,7 +249,14 @@ function publish(data, id, payload) {
     at: String((payload && payload.at) || store.nowText()),
     type: payload && payload.auto === true ? '自动' : '人工',
     operator: String((payload && payload.operator) || 'system').trim(),
-    magnitude: quakelib.eventMagnitude(data, event.id).magnitude,
+    // 发布当时的对外口径整条快照，之后再更正也不改这条记录
+    magnitude: corrections.currentMagnitude(data, event),
+    lat: Number(event.lat),
+    lon: Number(event.lon),
+    depth: Number(event.depth),
+    originTime: String(event.originTime),
+    regionName: String(event.regionName || ''),
+    magnitudeType: String(event.magnitudeType || 'ML'),
     channel: String((payload && payload.channel) || '速报').trim(),
     remark: String((payload && payload.remark) || ''),
   };
@@ -224,4 +298,4 @@ function publishes(data, query) {
   return rows.slice().sort((a, b) => (a.at < b.at ? 1 : -1));
 }
 
-module.exports = { list, find, detail, create, update, addReview, publish, remove, reviews, publishes, decorate, latestReviewOf, STATUS_LIST };
+module.exports = { list, find, detail, create, update, addReview, publish, remove, reviews, publishes, timeline, decorate, latestReviewOf, STATUS_LIST };

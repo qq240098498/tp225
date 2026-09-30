@@ -19,8 +19,23 @@ const DEFAULT_SETTINGS = {
 function normalize(raw) {
   const data = raw && typeof raw === 'object' ? raw : {};
   data.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || {});
-  for (const key of ['stations', 'events', 'arrivals', 'reviews', 'publishes']) {
+  for (const key of ['stations', 'events', 'arrivals', 'reviews', 'publishes', 'corrections']) {
     if (!Array.isArray(data[key])) data[key] = [];
+  }
+  // 旧数据的发布记录只快照了震级，补上发布时点的位置字段（用事件当前值兜底，
+  // 仅为让老记录在时间线上字段齐全；新发布会在发布当时完整快照）
+  for (const pub of data.publishes) {
+    if (pub.lat === undefined) {
+      const event = data.events.find((e) => e.id === pub.eventId);
+      if (event) {
+        pub.lat = event.lat;
+        pub.lon = event.lon;
+        pub.depth = event.depth;
+        pub.originTime = event.originTime;
+        pub.regionName = event.regionName || '';
+        pub.magnitudeType = event.magnitudeType || 'ML';
+      }
+    }
   }
   return data;
 }

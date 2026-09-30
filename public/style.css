@@ -424,6 +424,8 @@ textarea.field-input { resize: vertical; }
   box-shadow: 0 12px 32px rgba(31, 35, 51, .28);
 }
 
+.modal-wide { max-width: 980px; }
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -468,3 +470,38 @@ textarea.field-input { resize: vertical; }
 }
 
 .toast-warn { background: var(--accent); }
+
+/* ---------- 更正 ---------- */
+
+.pill-corr {
+  border-color: #d8b36a;
+  background: #fbf2dd;
+  color: #8a5b06;
+}
+
+.num-strong-corr { color: #8a5b06; font-weight: 700; }
+
+.btn-correct {
+  border-color: #d8b36a;
+  color: #8a5b06;
+  background: #fff;
+}
+.btn-correct:hover { background: #fbf2dd; border-color: #c99c44; color: #8a5b06; }
+
+.corr-diff { white-space: nowrap; }
+.corr-before { color: var(--muted); text-decoration: line-through; }
+.corr-arrow { margin: 0 4px; color: var(--muted); }
+.corr-after { color: #8a5b06; font-weight: 700; }
+
+.tl-correction { background: #fdfaf2; }
+.tl-correction td { border: 1px solid var(--line); }
+.tl-publish td { border: 1px solid var(--line); }
+
+.corr-table, .batch-corr-wrap .mini-table { margin-bottom: 8px; }
+.corr-table .corr-pick, .batch-corr-row .corr-pick { white-space: nowrap; }
+.corr-table input[type="number"], .batch-corr-row input[type="number"],
+.batch-corr-row input[type="text"] { width: 110px; }
+
+.batch-corr-wrap { max-height: 320px; margin-bottom: 8px; }
+.batch-corr-wrap .mini-table th, .batch-corr-wrap .mini-table td { padding: 3px 5px; }
+.batch-corr-row td.num { font-size: 12px; }

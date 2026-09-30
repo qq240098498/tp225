@@ -88,7 +88,7 @@
       <div class="panel">
         <div class="panel-head">
           <h2>事件清单</h2>
-          <span class="hint">点一行展开震相、自动发布判定、复核历史与发布记录</span>
+          <span class="hint">点一行展开震相、自动发布判定、复核/发布记录、对外口径时间线与更正登记</span>
           <span class="head-actions">
             <button type="button" class="btn btn-sm" id="btnEventRefresh">刷新</button>
           </span>
@@ -98,7 +98,7 @@
             <thead>
               <tr>
                 <th>编号</th><th>发震时刻</th><th>纬度</th><th>经度</th><th>深度</th>
-                <th>震级</th><th>台站数</th><th>残差</th><th>状态</th><th>复核次数</th><th>发布次数</th>
+                <th>震级</th><th>台站数</th><th>残差</th><th>状态</th><th>复核次数</th><th>发布次数</th><th>更正次数</th>
               </tr>
             </thead>
             <tbody id="eventRows"></tbody>
@@ -152,7 +152,7 @@
       <div class="panel">
         <div class="panel-head">
           <h2>发布台账</h2>
-          <span class="hint">同一事件只能有一条有效发布，重复发布会拦下</span>
+          <span class="hint">历史发布记录只追加、不修改；点一条更正批次可展开各事件改前改后</span>
         </div>
         <div class="table-wrap">
           <table class="data-table">
@@ -162,6 +162,25 @@
               </tr>
             </thead>
             <tbody id="publishRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>更正台账</h2>
+          <span class="hint">发布之后每次口径修订都在这留痕；一批可同时挂多个事件</span>
+          <span class="head-actions">
+            <button type="button" class="btn btn-primary btn-sm" id="btnBatchCorrection">批量登记更正</button>
+          </span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>批次号</th><th>更正时刻</th><th>更正人</th><th>更正依据</th><th>影响事件数</th><th>更正项</th><th>备注</th>
+              </tr>
+            </thead>
+            <tbody id="correctionRows"></tbody>
           </table>
         </div>
       </div>

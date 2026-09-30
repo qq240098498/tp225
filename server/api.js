@@ -6,6 +6,7 @@ const events = require('./events');
 const arrivals = require('./arrivals');
 const quakelib = require('./quakelib');
 const summary = require('./summary');
+const corrections = require('./corrections');
 
 const router = express.Router();
 
@@ -51,10 +52,27 @@ router.patch('/events/:id', withData((data, req) => ({ __save: true, __body: eve
 router.delete('/events/:id', withData((data, req) => ({ __save: true, __body: events.remove(data, req.params.id, req.body || {}) })));
 router.post('/events/:id/reviews', withData((data, req) => ({ __save: true, __body: events.addReview(data, req.params.id, req.body || {}) })));
 router.post('/events/:id/publish', withData((data, req) => ({ __save: true, __body: events.publish(data, req.params.id, req.body || {}) })));
+// 单个事件登记更正：在服务端包成一批，走和批量完全一样的校验/落库
+router.post('/events/:id/corrections', withData((data, req) => {
+  const body = req.body || {};
+  const batch = corrections.createBatch(data, {
+    at: body.at,
+    corrector: body.corrector,
+    reason: body.reason,
+    remark: body.remark,
+    items: [{ eventId: req.params.id, fields: body.fields, after: body.after || {}, remark: body.itemRemark || '' }],
+  });
+  return { __save: true, __body: batch };
+}));
 router.get('/events/:id/auto-check', withData((data, req) => quakelib.autoPublishCheck(data, events.find(data, req.params.id))));
 
 router.get('/reviews', withData((data, req) => events.reviews(data, req.query)));
 router.get('/publishes', withData((data, req) => events.publishes(data, req.query)));
+
+// 更正台账：批量登记（一批可挂多个事件）、批次清单、摊平后的更正条目
+router.post('/corrections', withData((data, req) => ({ __save: true, __body: corrections.createBatch(data, req.body || {}) })));
+router.get('/corrections', withData((data, req) => corrections.listBatches(data, req.query)));
+router.get('/corrections/entries', withData((data, req) => corrections.listEntries(data, req.query)));
 
 router.get('/arrivals', withData((data, req) => arrivals.list(data, req.query)));
 router.post('/arrivals', withData((data, req) => ({ __save: true, __body: arrivals.create(data, req.body || {}) })));
