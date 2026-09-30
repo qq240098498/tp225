@@ -169,12 +169,14 @@
       modalActions.push(action);
     });
     $('#modalMask').hidden = false;
+    $('#modalCard').classList.toggle('modal-wide', !!config.wide);
     const first = $('#modalBody .field-input');
     if (first) first.focus();
   }
 
   function closeModal() {
     $('#modalMask').hidden = true;
+    $('#modalCard').classList.remove('modal-wide');
     $('#modalBody').innerHTML = '';
     $('#modalFoot').innerHTML = '';
     modalActions = [];
@@ -242,6 +244,7 @@
     arrivals: [],
     reviews: [],
     publishes: [],
+    corrections: [],
     refStations: [],
     refEvents: [],
     filters: {
@@ -334,7 +337,9 @@
         '<p class="rail-note">震级差值严格大于容差才算超容差；正好等于容差不算超。</p>' +
         '</div>' +
         '<div class="rail-block"><h3>发布台账</h3>' +
-        '<p class="rail-note">同一事件只能有一条有效发布，重复发布会在发布时被拦下。</p></div>';
+        '<p class="rail-note">同一事件只能有一条有效发布，重复发布会在发布时被拦下；发布时的震级与位置是历史快照。</p></div>' +
+        '<div class="rail-block"><h3>更正台账</h3>' +
+        '<p class="rail-note">发布之后改口径只能登记更正：记录更正时刻、更正人、依据、改前改后；当前对外口径立即更新，历史发布记录不抹掉。顶部按钮可一次批量登记多个受影响事件。</p></div>';
     } else {
       rail.innerHTML =
         '<div class="rail-block"><h3>概览</h3>' +
@@ -410,6 +415,7 @@
       { label: '震相条数', value: s.arrivalCount, sub: '台账里的震相记录', jump: 'arrivals' },
       { label: '复核条数', value: s.reviewCount, sub: '复核台账', jump: 'reviews' },
       { label: '发布条数', value: s.publishCount, sub: '发布台账', jump: 'reviews' },
+      { label: '更正批次', value: s.correctionCount, sub: '涉及事件 ' + s.correctedEventCount + ' 个', jump: 'reviews', warn: true },
       { label: '超容差复核', value: s.overToleranceReviews, sub: '容差 ' + s.settings.reviewToleranceMagnitude, jump: 'reviews', overTolerance: true, warn: true },
       { label: '重复发布事件', value: s.repeatedPublishEvents, sub: '同一事件发布超过一次', jump: 'reviews' },
       { label: '最大震级', value: s.maxMagnitude, sub: '平均 ' + s.averageMagnitude, jump: 'events' },
@@ -624,7 +630,7 @@
   function renderEvents() {
     const rows = $('#eventRows');
     if (!state.events.length) {
-      rows.innerHTML = '<tr><td colspan="11" class="empty">没有符合条件的事件</td></tr>';
+      rows.innerHTML = '<tr><td colspan="12" class="empty">没有符合条件的事件</td></tr>';
       return;
     }
     rows.innerHTML = state.events.map(function (e) {
@@ -640,6 +646,7 @@
         '<td>' + pill(e.status) + '</td>' +
         '<td class="num">' + num(e.reviewCount) + '</td>' +
         '<td class="num">' + num(e.publishCount) + '</td>' +
+        '<td class="num">' + (e.correctionCount ? '<span class="pill pill-warn">' + num(e.correctionCount) + '</span>' : num(e.correctionCount)) + '</td>' +
         '</tr>';
     }).join('');
   }
@@ -715,15 +722,76 @@
         '<td>' + show(p.operator) + '</td>' +
         '<td>' + show(p.channel) + '</td>' +
         '<td class="num">' + show(p.magnitude) + '</td>' +
+        '<td class="num">' + show(p.lat) + '</td>' +
+        '<td class="num">' + show(p.lon) + '</td>' +
+        '<td class="num">' + show(p.depth) + '</td>' +
         '<td>' + show(p.remark) + '</td></tr>';
     }).join('');
-    return miniTable(['发布时刻', '类型', '操作人', '渠道', '震级', '备注'], body);
+    return miniTable(['发布时刻', '类型', '操作人', '渠道', '发布震级', '纬度', '经度', '深度', '备注'], body);
+  }
+
+  const FIELD_NAME = { magnitude: '震级', lat: '纬度', lon: '经度', depth: '深度', originTime: '发震时刻' };
+
+  function changeLines(changes) {
+    return (changes || []).map(function (c) {
+      return '<span class="diff-line"><span class="diff-name">' + esc(c.fieldName || FIELD_NAME[c.field] || c.field) + '</span>' +
+        '<span class="diff-from">' + show(c.before) + '</span><span class="diff-arrow">→</span>' +
+        '<span class="diff-to">' + show(c.after) + '</span></span>';
+    }).join('');
+  }
+
+  function eventCorrectionTable(rows) {
+    const body = rows.map(function (c) {
+      return '<tr><td class="num">第 ' + c.seq + ' 次</td>' +
+        '<td>' + show(c.at) + '</td>' +
+        '<td>' + show(c.corrector) + '</td>' +
+        '<td class="wrap">' + changeLines(c.changes) + '</td>' +
+        '<td class="wrap">' + show(c.reason) + '</td>' +
+        '<td class="wrap">' + show(c.remark) + '</td>' +
+        '<td class="mono muted">' + show(c.batchId) + '</td></tr>';
+    }).join('');
+    return miniTable(['第几次', '更正时刻', '更正人', '改前 → 改后', '依据', '备注', '批次号'], body);
+  }
+
+  // 把发布与更正按时间串成一条对外口径时间线：第一次发的是多少、第几次改成多少
+  function eventTimelineHtml(publishes, corrections) {
+    const marks = [];
+    publishes.forEach(function (p) {
+      marks.push({
+        at: p.at,
+        kind: 'publish',
+        text: '发布（' + p.type + '）：震级 ' + text(p.magnitude) +
+          '，位置 ' + text(p.lat) + ', ' + text(p.lon) + '，深度 ' + text(p.depth) + ' 公里'
+      });
+    });
+    (corrections || []).forEach(function (c) {
+      const names = (c.changes || []).map(function (ch) { return ch.fieldName || FIELD_NAME[ch.field] || ch.field; }).join('、');
+      marks.push({
+        at: c.at,
+        kind: 'correction',
+        text: '第 ' + c.seq + ' 次更正（' + names + '）：' +
+          (c.changes || []).map(function (ch) {
+            return (ch.fieldName || FIELD_NAME[ch.field] || ch.field) + ' ' + text(ch.before) + '→' + text(ch.after);
+          }).join('；')
+      });
+    });
+    marks.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
+    if (!marks.length) return '<p class="empty">还没有发布，更正要发布之后才能登记</p>';
+    return '<ol class="timeline">' + marks.map(function (m) {
+      return '<li class="timeline-item timeline-' + m.kind + '"><span class="timeline-at">' + esc(m.at) +
+        '</span><span class="timeline-text">' + esc(m.text) + '</span></li>';
+    }).join('') + '</ol>';
   }
 
   function eventDetailHtml(d) {
     const arrivals = d.arrivals || [];
     const reviews = d.reviews || [];
     const publishes = d.publishes || [];
+    const corrections = d.corrections || [];
+    const isPublished = publishes.length > 0 || d.status === '已发布';
+    const magLine = isPublished
+      ? show(d.magnitude) + '（' + show(d.magnitudeType) + '，对外口径；台站测算 ' + show(d.measuredMagnitude) + '）'
+      : show(d.magnitude) + '（' + show(d.magnitudeType) + '，台站中位数测算）';
     const grid =
       '<div><span class="k">编号</span><span class="v">' + show(d.code) + '</span></div>' +
       '<div><span class="k">发震时刻</span><span class="v">' + show(d.originTime) + '</span></div>' +
@@ -731,7 +799,7 @@
       '<div><span class="k">经度</span><span class="v">' + show(d.lon) + '</span></div>' +
       '<div><span class="k">深度（公里）</span><span class="v">' + show(d.depth) + '</span></div>' +
       '<div><span class="k">区域</span><span class="v">' + show(d.regionName) + '</span></div>' +
-      '<div><span class="k">震级</span><span class="v">' + show(d.magnitude) + '（' + show(d.magnitudeType) + '）</span></div>' +
+      '<div><span class="k">震级</span><span class="v">' + magLine + '</span></div>' +
       '<div><span class="k">震级初报</span><span class="v">' + show(d.magnitudeInit) + '</span></div>' +
       '<div><span class="k">参与台站数</span><span class="v">' + show(d.stationCount) + '</span></div>' +
       '<div><span class="k">台站代码</span><span class="v">' + show((d.stationCodes || []).join('、')) + '</span></div>' +
@@ -740,20 +808,27 @@
       '<div><span class="k">来源</span><span class="v">' + show(d.source) + '</span></div>' +
       '<div><span class="k">复核次数</span><span class="v">' + show(d.reviewCount) + '</span></div>' +
       '<div><span class="k">发布次数</span><span class="v">' + show(d.publishCount) + '</span></div>' +
+      '<div><span class="k">更正次数</span><span class="v">' + show(d.correctionCount) + '</span></div>' +
       '<div><span class="k">最近发布</span><span class="v">' + show(d.lastPublishAt) + '</span></div>' +
+      '<div><span class="k">最近更正</span><span class="v">' + show(d.lastCorrectionAt) + '</span></div>' +
       '<div><span class="k">备注</span><span class="v">' + show(d.remark) + '</span></div>';
 
     return '<div class="detail-grid">' + grid + '</div>' +
       autoCheckBlock(d.autoCheck) +
+      '<h4 class="detail-title">对外口径时间线（发布与更正，接口返回发布 ' + publishes.length + ' 条、更正 ' + corrections.length + ' 条）</h4>' +
+      eventTimelineHtml(publishes, corrections) +
       '<h4 class="detail-title">逐条震相（接口返回 ' + arrivals.length + ' 条）</h4>' +
       (arrivals.length ? eventArrivalTable(arrivals) : '<p class="empty">这个事件还没有震相记录，没有震相的事件只能走人工发布</p>') +
       '<h4 class="detail-title">复核历史（接口返回 ' + reviews.length + ' 条）</h4>' +
       (reviews.length ? eventReviewTable(reviews) : '<p class="empty">还没有复核记录</p>') +
-      '<h4 class="detail-title">发布记录（接口返回 ' + publishes.length + ' 条）</h4>' +
+      '<h4 class="detail-title">发布记录（接口返回 ' + publishes.length + ' 条，只追加不改动）</h4>' +
       (publishes.length ? eventPublishTable(publishes) : '<p class="empty">还没有发布记录</p>') +
+      '<h4 class="detail-title">更正历史（接口返回 ' + corrections.length + ' 条）</h4>' +
+      (corrections.length ? eventCorrectionTable(corrections) : '<p class="empty">发布之后有口径改动时在这里登记更正</p>') +
       '<div class="detail-actions">' +
       '<button type="button" class="btn btn-primary btn-sm" data-event-act="review" data-event-id="' + esc(d.id) + '">复核</button>' +
       '<button type="button" class="btn btn-sm" data-event-act="publish" data-event-id="' + esc(d.id) + '">发布</button>' +
+      (isPublished ? '<button type="button" class="btn btn-sm btn-warn" data-event-act="correct" data-event-id="' + esc(d.id) + '">登记更正</button>' : '') +
       '<button type="button" class="btn btn-sm btn-danger" data-event-act="delete" data-event-id="' + esc(d.id) + '" data-label="删除">删除</button>' +
       '</div>' +
       '<div class="delete-reason" id="deleteReason-' + esc(d.id) + '" hidden>' +
@@ -779,6 +854,7 @@
   function handleEventAction(action, id, button) {
     if (action === 'review') openReviewForm(id);
     else if (action === 'publish') openPublishForm(id);
+    else if (action === 'correct') openCorrectionForm(id);
     else if (action === 'delete') armDelete(button, function () { return deleteEvent(id, false); });
     else if (action === 'delete-force') deleteEventWithReason(id);
   }
@@ -851,6 +927,174 @@
       })
       .then(function () { return refreshEventDetail(id); })
       .then(function () { return refreshReferences(); })
+      .catch(function (err) { showError(err); });
+  }
+
+  /* ---------------- 更正（单个 / 批量） ---------------- */
+
+  function correctionCommonFields(corrector, at, reason, remark) {
+    return '<div class="form-row">' +
+      fieldHtml('更正人', 'corrector', corrector || '', { placeholder: '如 王工' }) +
+      fieldHtml('更正时刻', 'at', at || nowText(), {}) +
+      '</div>' +
+      fieldHtml('更正依据', 'reason', reason || '', { placeholder: '如 同一批台站重新定标；如 新增台站震相后重新定位' }) +
+      fieldHtml('备注', 'remark', remark || '', { tag: 'textarea', rows: 2 });
+  }
+
+  function openCorrectionForm(id) {
+    const ev = findEvent(id);
+    openModal({
+      title: '登记发布后更正' + (ev ? '：' + text(ev.code) : ''),
+      bodyHtml:
+        '<p class="modal-note">只能对已发布事件登记；哪一项要改就填哪一项，留空的不改。提交后当前对外口径立即更新，历史发布记录保留不动。</p>' +
+        '<div class="form-row">' +
+        fieldHtml('改后震级', 'magnitude', ev ? ev.magnitude : '', { type: 'number', step: '0.01' }) +
+        fieldHtml('改后深度（公里）', 'depth', ev ? ev.depth : '', { type: 'number', step: '1' }) +
+        '</div>' +
+        '<div class="form-row">' +
+        fieldHtml('改后纬度', 'lat', ev ? ev.lat : '', { type: 'number', step: '0.01' }) +
+        fieldHtml('改后经度', 'lon', ev ? ev.lon : '', { type: 'number', step: '0.01' }) +
+        '</div>' +
+        correctionCommonFields('', '', '', ''),
+      actions: [
+        { label: '取消', cls: 'btn-ghost' },
+        { label: '提交更正', cls: 'btn-primary', onClick: function () { submitCorrection(id); } }
+      ]
+    });
+  }
+
+  function submitCorrection(id) {
+    clearInvalid();
+    const body = collectFields();
+    ['magnitude', 'depth', 'lat', 'lon'].forEach(function (k) { if (body[k] === '') delete body[k]; });
+    if (body.at === '') delete body.at;
+    if (body.remark === '') delete body.remark;
+    return api('/api/events/' + encodeURIComponent(id) + '/corrections', { method: 'POST', body: body })
+      .then(function (result) {
+        closeModal();
+        toast('更正已登记，当前对外口径已更新');
+        return loadView('events')
+          .then(function () { return refreshEventDetail(id); })
+          .then(function () { return refreshReferences(); })
+          .then(function () { showCorrectionResult(result); });
+      })
+      .catch(function (err) { showError(err); });
+  }
+
+  function showCorrectionResult(result) {
+    const affected = (result && result.affectedEvents) || [];
+    if (!affected.length) return;
+    const lines = affected.map(function (item) {
+      const diff = (item.changes || []).map(function (c) {
+        return (c.fieldName || FIELD_NAME[c.field] || c.field) + ' ' + text(c.before) + '→' + text(c.after);
+      }).join('；');
+      return text(item.eventCode) + '：' + diff;
+    });
+    openModal({
+      title: '更正已登记：受影响事件 ' + affected.length + ' 个',
+      bodyHtml:
+        '<p class="modal-note">批次号 ' + text(result.correction && result.correction.id) +
+        '，更正时刻 ' + text(result.correction && result.correction.at) + '</p>' +
+        '<ul class="affected-list">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>',
+      actions: [
+        { label: '知道了', cls: 'btn-primary' },
+        { label: '去看更正台账', cls: '', onClick: function () { closeModal(); switchView('reviews'); } }
+      ]
+    });
+  }
+
+  // 批量登记：每个已发布事件一行，填了的字段才参与这次更正
+  function batchEventOptions(selected) {
+    const opts = [{ value: '', label: '（选已发布事件）' }].concat(
+      state.refEvents.filter(function (e) { return e.status === '已发布' || e.publishCount > 0; })
+        .map(function (e) { return { value: e.id, label: e.code + '　M' + e.magnitude + '　' + e.originTime }; })
+    );
+    return '<select class="field-input" data-field="eventId">' + opts.map(function (item) {
+      const isSel = String(selected) === String(item.value) ? ' selected' : '';
+      return '<option value="' + esc(item.value) + '"' + isSel + '>' + esc(item.label) + '</option>';
+    }).join('') + '</select>';
+  }
+
+  function batchRowHtml(row) {
+    return '<tr class="cor-row">' +
+      '<td>' + batchEventOptions(row.eventId || '') + '</td>' +
+      '<td><input class="field-input cor-cell" type="number" step="0.01" data-cor="magnitude" value="' + esc(row.magnitude || '') + '" placeholder="不改留空"></td>' +
+      '<td><input class="field-input cor-cell" type="number" step="0.01" data-cor="lat" value="' + esc(row.lat || '') + '" placeholder="不改留空"></td>' +
+      '<td><input class="field-input cor-cell" type="number" step="0.01" data-cor="lon" value="' + esc(row.lon || '') + '" placeholder="不改留空"></td>' +
+      '<td><input class="field-input cor-cell" type="number" step="1" data-cor="depth" value="' + esc(row.depth || '') + '" placeholder="不改留空"></td>' +
+      '<td><button type="button" class="btn btn-ghost btn-sm" data-cor-remove="1">移除</button></td>' +
+      '</tr>';
+  }
+
+  function renderBatchRows(rows) {
+    $('#corRows').innerHTML = rows.map(batchRowHtml).join('');
+  }
+
+  function openBatchCorrectionForm() {
+    const published = state.refEvents.filter(function (e) { return e.status === '已发布' || e.publishCount > 0; });
+    if (!published.length) {
+      toast('还没有已发布事件，无法登记更正', 'warn');
+      return;
+    }
+    openModal({
+      title: '批量登记发布后更正',
+      wide: true,
+      bodyHtml:
+        '<p class="modal-note">适用于一次更正影响多个事件（如同一批台站定标后统一调整）。每个事件一行，哪几项要改就填哪几项，留空不改；' +
+        '全部行校验通过后才一起落账，返回受影响事件清单与逐项差异。</p>' +
+        correctionCommonFields('', '', '', '') +
+        '<div class="table-wrap cor-table-wrap">' +
+        '<table class="mini-table"><thead><tr><th>事件</th><th>改后震级</th><th>改后纬度</th><th>改后经度</th><th>改后深度</th><th></th></tr></thead>' +
+        '<tbody id="corRows"></tbody></table></div>' +
+        '<div class="cor-row-actions"><button type="button" class="btn btn-sm" id="btnAddCorRow">添加事件行</button></div>',
+      actions: [
+        { label: '取消', cls: 'btn-ghost' },
+        { label: '提交批量更正', cls: 'btn-primary', onClick: submitBatchCorrection }
+      ]
+    });
+    renderBatchRows([{ eventId: published[0].id }]);
+    $('#btnAddCorRow').addEventListener('click', function () {
+      const rows = collectBatchRows();
+      rows.push({ eventId: '' });
+      renderBatchRows(rows);
+    });
+    $('#corRows').addEventListener('click', function (event) {
+      if (!event.target.closest('button[data-cor-remove]')) return;
+      const tr = event.target.closest('tr.cor-row');
+      const rows = collectBatchRows().filter(function (r, index) { return index !== Array.prototype.indexOf.call($('#corRows').children, tr); });
+      renderBatchRows(rows.length ? rows : [{ eventId: '' }]);
+    });
+  }
+
+  function collectBatchRows() {
+    return $$('#corRows tr.cor-row').map(function (tr) {
+      const row = { eventId: (tr.querySelector('[data-field="eventId"]') || {}).value || '' };
+      $$(tr.querySelectorAll('.cor-cell')).forEach(function (input) {
+        if (input.value !== '') row[input.dataset.cor] = input.value;
+      });
+      return row;
+    });
+  }
+
+  function submitBatchCorrection() {
+    clearInvalid();
+    const common = collectFields();
+    const items = collectBatchRows().filter(function (r) {
+      return r.eventId || r.magnitude !== undefined || r.lat !== undefined || r.lon !== undefined || r.depth !== undefined;
+    });
+    const body = {
+      corrector: common.corrector,
+      reason: common.reason,
+      remark: common.remark || undefined,
+      at: common.at || undefined,
+      items: items
+    };
+    return api('/api/corrections', { method: 'POST', body: body })
+      .then(function (result) {
+        closeModal();
+        toast('批量更正已登记，受影响事件 ' + result.affectedEvents.length + ' 个');
+        return loadView('reviews').then(function () { showCorrectionResult(result); });
+      })
       .catch(function (err) { showError(err); });
   }
 
@@ -1105,7 +1349,7 @@
 
     const publishRows = $('#publishRows');
     if (!state.publishes.length) {
-      publishRows.innerHTML = '<tr><td colspan="7" class="empty">还没有发布记录</td></tr>';
+      publishRows.innerHTML = '<tr><td colspan="10" class="empty">还没有发布记录</td></tr>';
     } else {
       publishRows.innerHTML = state.publishes.map(function (p) {
         return '<tr class="data-row plain">' +
@@ -1115,7 +1359,37 @@
           '<td>' + show(p.operator) + '</td>' +
           '<td>' + show(p.channel) + '</td>' +
           '<td class="num">' + num(p.magnitude) + '</td>' +
+          '<td class="num">' + num(p.lat) + '</td>' +
+          '<td class="num">' + num(p.lon) + '</td>' +
+          '<td class="num">' + num(p.depth) + '</td>' +
           '<td class="wrap">' + show(p.remark) + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    const correctionRows = $('#correctionRows');
+    if (!state.corrections.length) {
+      correctionRows.innerHTML = '<tr><td colspan="7" class="empty">还没有更正记录</td></tr>';
+    } else {
+      correctionRows.innerHTML = state.corrections.map(function (c) {
+        const perEvent = (c.items || []).map(function (item) {
+          const diff = (item.changes || []).map(function (ch) {
+            return (ch.fieldName || FIELD_NAME[ch.field] || ch.field) + ' ' + text(ch.before) + '→' + text(ch.after);
+          }).join('；');
+          return '<div class="cor-event"><span class="mono">' + show(item.eventCode) + '</span><span class="cor-diff">' + esc(diff) + '</span></div>';
+        }).join('');
+        const names = {};
+        (c.items || []).forEach(function (item) {
+          (item.changes || []).forEach(function (ch) { names[ch.fieldName || FIELD_NAME[ch.field] || ch.field] = true; });
+        });
+        return '<tr class="data-row plain">' +
+          '<td class="mono">' + show(c.id) + '</td>' +
+          '<td>' + show(c.at) + '</td>' +
+          '<td>' + show(c.corrector) + '</td>' +
+          '<td class="num">' + num(c.eventCount) + ' 个</td>' +
+          '<td class="wrap">' + show(c.reason) + '</td>' +
+          '<td class="wrap">' + esc(Object.keys(names).join('、')) + '</td>' +
+          '<td class="wrap cor-per-event">' + perEvent + '</td>' +
           '</tr>';
       }).join('');
     }
@@ -1160,6 +1434,7 @@
       } else if (view === 'reviews') {
         state.reviews = await api('/api/reviews' + qs(buildQuery('reviews', state.filters.reviews)));
         state.publishes = await api('/api/publishes');
+        state.corrections = await api('/api/corrections');
         renderReviews();
       }
     } catch (err) {
@@ -1351,6 +1626,9 @@
     $('#btnAddArrival').addEventListener('click', openArrivalForm);
     $('#btnImportArrival').addEventListener('click', openImportForm);
     $('#btnEventRefresh').addEventListener('click', function () { loadView('events'); });
+    $('#btnBatchCorrection').addEventListener('click', function () {
+      refreshReferences().then(openBatchCorrectionForm);
+    });
   }
 
   async function init() {

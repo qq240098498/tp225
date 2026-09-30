@@ -14,6 +14,10 @@ function overview(data) {
 
   const publishCountByEvent = {};
   for (const p of data.publishes) publishCountByEvent[p.eventId] = (publishCountByEvent[p.eventId] || 0) + 1;
+  const correctionCountByEvent = {};
+  for (const c of data.corrections || []) {
+    for (const item of c.items) correctionCountByEvent[item.eventId] = (correctionCountByEvent[item.eventId] || 0) + 1;
+  }
 
   return {
     today: store.todayIso(),
@@ -24,6 +28,8 @@ function overview(data) {
     arrivalCount: data.arrivals.length,
     reviewCount: data.reviews.length,
     publishCount: data.publishes.length,
+    correctionCount: (data.corrections || []).length,
+    correctedEventCount: Object.keys(correctionCountByEvent).length,
     repeatedPublishEvents: Object.keys(publishCountByEvent).filter((k) => publishCountByEvent[k] > 1).length,
     overToleranceReviews: data.reviews.filter((r) => r.overTolerance).length,
     maxMagnitude: magnitudes.length ? store.round(Math.max.apply(null, magnitudes), 2) : 0,

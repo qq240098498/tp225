@@ -1,6 +1,7 @@
 const { AppError } = require('./errors');
 const store = require('./store');
 const quakelib = require('./quakelib');
+const corrections = require('./corrections');
 
 const STATUS_LIST = ['待复核', '已复核', '已发布', '已删除'];
 const BURIED = 2000;
@@ -13,15 +14,18 @@ function latestReviewOf(data, eventId) {
 }
 
 function decorate(data, event) {
-  const magnitude = quakelib.eventMagnitude(data, event.id);
+  const measured = quakelib.eventMagnitude(data, event.id);
   const rms = quakelib.eventRms(data, event.id);
   const arrivals = data.arrivals.filter((a) => a.eventId === event.id);
   const publishes = data.publishes.filter((p) => p.eventId === event.id);
   const latest = latestReviewOf(data, event.id);
+  const correctionCount = corrections.countForEvent(data, event.id);
   return Object.assign({}, event, {
-    magnitude: magnitude.magnitude,
+    // 当前对外口径震级：发布后以发布/更正确定的值为准；measuredMagnitude 是台站中位数测算值，留作参考
+    magnitude: corrections.currentMagnitude(data, event),
+    measuredMagnitude: measured.magnitude,
     magnitudeType: event.magnitudeType || 'ML',
-    stationCount: magnitude.stationCount,
+    stationCount: measured.stationCount,
     stationCodes: quakelib.stationsOfEvent(data, event.id),
     arrivalCount: arrivals.length,
     rms,
@@ -32,6 +36,8 @@ function decorate(data, event) {
     reviewCount: data.reviews.filter((r) => r.eventId === event.id).length,
     publishCount: publishes.length,
     lastPublishAt: publishes.length ? publishes[publishes.length - 1].at : '',
+    correctionCount,
+    lastCorrectionAt: corrections.lastAtForEvent(data, event.id),
   });
 }
 
@@ -70,6 +76,7 @@ function detail(data, id) {
     arrivals: enriched,
     reviews: data.reviews.filter((r) => r.eventId === id).slice().sort((a, b) => (a.at < b.at ? -1 : 1)),
     publishes: data.publishes.filter((p) => p.eventId === id).slice().sort((a, b) => (a.at < b.at ? -1 : 1)),
+    corrections: corrections.forEvent(data, id),
   });
 }
 
@@ -112,6 +119,18 @@ function create(data, payload) {
 
 function update(data, id, payload) {
   const event = find(data, id);
+  // 已发布的口径字段（位置、发震时刻）只能走更正留痕，不许直接 PATCH 掉
+  if (data.publishes.some((p) => p.eventId === event.id)) {
+    const locked = {};
+    for (const field of ['originTime', 'lat', 'lon', 'depth']) {
+      if (payload[field] !== undefined && Number(payload[field]) !== Number(event[field]) && String(payload[field]) !== String(event[field])) {
+        locked[field] = '已发布后的' + ({ originTime: '发震时刻', lat: '纬度', lon: '经度', depth: '深度' })[field] + '只能登记更正，不能直接改';
+      }
+    }
+    if (Object.keys(locked).length) {
+      throw new AppError(409, 'PUBLISHED_EVENT_LOCKED', '这个事件已经发布，口径改动请走「更正」', locked);
+    }
+  }
   validate(data, payload, event);
   const merged = Object.assign({}, event, payload);
   Object.assign(event, {
@@ -132,7 +151,8 @@ function update(data, id, payload) {
 // 复核：登记改动，超过容差的要标出来
 function addReview(data, id, payload) {
   const event = find(data, id);
-  const beforeMagnitude = quakelib.eventMagnitude(data, event.id).magnitude;
+  // 改前震级取当前对外口径：发布后是发布/更正确定的值，之前是台站中位数
+  const beforeMagnitude = corrections.currentMagnitude(data, event);
   const afterMagnitude = payload.afterMagnitude === undefined || payload.afterMagnitude === '' ? beforeMagnitude : Number(payload.afterMagnitude);
   const beforeDepth = Number(event.depth);
   const afterDepth = payload.afterDepth === undefined || payload.afterDepth === '' ? beforeDepth : Number(payload.afterDepth);
@@ -141,6 +161,20 @@ function addReview(data, id, payload) {
   }
   if (payload.action && !['通过', '退回', '改震级', '改位置'].includes(payload.action)) {
     throw new AppError(400, 'VALIDATION_FAILED', '复核动作只能是：通过、退回、改震级、改位置', { action: '动作不对' });
+  }
+  // 已发布后的口径改动必须走更正留痕，复核可以继续登记，但不能借复核改震级/深度
+  const isPublished = data.publishes.some((p) => p.eventId === event.id);
+  if (isPublished) {
+    const locked = {};
+    if (payload.afterMagnitude !== undefined && payload.afterMagnitude !== '' && Number(payload.afterMagnitude) !== beforeMagnitude) {
+      locked.afterMagnitude = '事件已发布，震级改动要登记更正，不能在复核里直接改';
+    }
+    if (payload.afterDepth !== undefined && payload.afterDepth !== '' && Number(payload.afterDepth) !== beforeDepth) {
+      locked.afterDepth = '事件已发布，深度改动要登记更正，不能在复核里直接改';
+    }
+    if (Object.keys(locked).length) {
+      throw new AppError(409, 'PUBLISHED_EVENT_LOCKED', '这个事件已经发布，口径改动请走「更正」', locked);
+    }
   }
   const tolerance = quakelib.reviewOverTolerance(beforeMagnitude, afterMagnitude, data.settings);
   const review = {
@@ -182,11 +216,19 @@ function publish(data, id, payload) {
     at: String((payload && payload.at) || store.nowText()),
     type: payload && payload.auto === true ? '自动' : '人工',
     operator: String((payload && payload.operator) || 'system').trim(),
-    magnitude: quakelib.eventMagnitude(data, event.id).magnitude,
+    // 发布时把当时的对外口径原样快照下来，之后更正只改当前值，不动这些历史记录
+    magnitude: corrections.currentMagnitude(data, event),
+    originTime: event.originTime,
+    lat: Number(event.lat),
+    lon: Number(event.lon),
+    depth: Number(event.depth),
+    regionName: event.regionName,
     channel: String((payload && payload.channel) || '速报').trim(),
     remark: String((payload && payload.remark) || ''),
   };
   data.publishes.push(record);
+  // 发布即冻结对外震级：之后测算值（震相调整等）不再直接改变对外口径，要改只能登记更正
+  event.officialMagnitude = record.magnitude;
   event.status = '已发布';
   event.publishAt = record.at;
   return { publish: record, event: decorate(data, event) };

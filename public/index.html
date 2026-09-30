@@ -98,7 +98,7 @@
             <thead>
               <tr>
                 <th>编号</th><th>发震时刻</th><th>纬度</th><th>经度</th><th>深度</th>
-                <th>震级</th><th>台站数</th><th>残差</th><th>状态</th><th>复核次数</th><th>发布次数</th>
+                <th>震级</th><th>台站数</th><th>残差</th><th>状态</th><th>复核次数</th><th>发布次数</th><th>更正次数</th>
               </tr>
             </thead>
             <tbody id="eventRows"></tbody>
@@ -152,16 +152,35 @@
       <div class="panel">
         <div class="panel-head">
           <h2>发布台账</h2>
-          <span class="hint">同一事件只能有一条有效发布，重复发布会拦下</span>
+          <span class="hint">同一事件只能有一条有效发布，重复发布会拦下；发布时的震级与位置是历史快照，不会被更正抹掉</span>
         </div>
         <div class="table-wrap">
           <table class="data-table">
             <thead>
               <tr>
-                <th>事件</th><th>发布时刻</th><th>类型</th><th>操作人</th><th>渠道</th><th>震级</th><th>备注</th>
+                <th>事件</th><th>发布时刻</th><th>类型</th><th>操作人</th><th>渠道</th><th>震级</th><th>纬度</th><th>经度</th><th>深度</th><th>备注</th>
               </tr>
             </thead>
             <tbody id="publishRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>更正台账</h2>
+          <span class="hint">发布后的每次更正都落账：更正时刻、更正人、依据、改前改后；一次可批量登记多个事件</span>
+          <span class="head-actions">
+            <button type="button" class="btn btn-primary btn-sm" id="btnBatchCorrection">批量登记更正</button>
+          </span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>批次</th><th>更正时刻</th><th>更正人</th><th>受影响事件</th><th>依据</th><th>改了哪几项</th><th>差异对照</th>
+              </tr>
+            </thead>
+            <tbody id="correctionRows"></tbody>
           </table>
         </div>
       </div>

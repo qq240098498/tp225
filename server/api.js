@@ -4,6 +4,7 @@ const { AppError } = require('./errors');
 const stations = require('./stations');
 const events = require('./events');
 const arrivals = require('./arrivals');
+const corrections = require('./corrections');
 const quakelib = require('./quakelib');
 const summary = require('./summary');
 
@@ -51,10 +52,15 @@ router.patch('/events/:id', withData((data, req) => ({ __save: true, __body: eve
 router.delete('/events/:id', withData((data, req) => ({ __save: true, __body: events.remove(data, req.params.id, req.body || {}) })));
 router.post('/events/:id/reviews', withData((data, req) => ({ __save: true, __body: events.addReview(data, req.params.id, req.body || {}) })));
 router.post('/events/:id/publish', withData((data, req) => ({ __save: true, __body: events.publish(data, req.params.id, req.body || {}) })));
+router.post('/events/:id/corrections', withData((data, req) => ({ __save: true, __body: corrections.registerOne(data, req.params.id, req.body || {}) })));
 router.get('/events/:id/auto-check', withData((data, req) => quakelib.autoPublishCheck(data, events.find(data, req.params.id))));
 
 router.get('/reviews', withData((data, req) => events.reviews(data, req.query)));
 router.get('/publishes', withData((data, req) => events.publishes(data, req.query)));
+
+// 更正台账：GET 查（支持 eventId、corrector），POST 一次登记一批（items 每条一个受影响事件）
+router.get('/corrections', withData((data, req) => corrections.list(data, req.query)));
+router.post('/corrections', withData((data, req) => ({ __save: true, __body: corrections.registerBatch(data, req.body || {}) })));
 
 router.get('/arrivals', withData((data, req) => arrivals.list(data, req.query)));
 router.post('/arrivals', withData((data, req) => ({ __save: true, __body: arrivals.create(data, req.body || {}) })));
